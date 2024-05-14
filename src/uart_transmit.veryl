@@ -1,0 +1,131 @@
+/// Transmit logic for the UART communication bus
+module UartTransmit #(
+    /// Data width of the transmit signal message
+    param DATA_WIDTH: u32 = 8,
+    /// Bits required to be able to count to the max pulse length.
+    /// If the system supports a range of baud rates, use the lowest one in the calculations.
+    /// The pulse length is `PULSE_WIDTH = CLK_FREQ / BAUD_RATE`,
+    /// so the max bits is $clog2(PULSE_WIDTH + PULSE_WIDTH / 2)
+    param MAX_PULSE_BITS: u32 = 20,
+) (
+    /// system clock
+    clk: input clock,
+    /// reset pin for the lin interface
+    rst: input reset,
+    /// Pulse width of the signal, this can be calculated from `CLK_FREQ / BAUD_RATE`
+    pulse_width: input logic<MAX_PULSE_BITS>,
+    /// Data to send out
+    data: input logic<DATA_WIDTH>,
+    /// Set to high to send the data, make low before data finishes sending to not resend
+    send: input logic,
+    /// Data that gets sent to the lin bus
+    tx: output logic,
+    /// Ready to transmit
+    ready: output logic,
+) {
+    local DATA_WIDTH_BITS: u32 = $clog2(DATA_WIDTH);
+
+    enum ComStates: logic<2> {
+        WAIT,
+        DATA,
+        STOP,
+    }
+
+    var state     : ComStates;
+    var next_state: ComStates;
+
+    var send_data    : logic<DATA_WIDTH>;
+    var new_send_data: logic<DATA_WIDTH>;
+
+    var clk_count     : logic<MAX_PULSE_BITS>;
+    var clk_count_rst : logic                ;
+    var clk_count_done: logic                ;
+
+    var data_count     : logic<DATA_WIDTH_BITS>;
+    var data_count_rst : logic                 ;
+    var data_count_done: logic                 ;
+
+    inst clk_counter: core_components::Counter #(
+        SIZE: MAX_PULSE_BITS,
+    ) (
+        clk                      ,
+        rst                      ,
+        usr_rst  : clk_count_rst ,
+        en       : 1             ,
+        start_val: '0            ,
+        end_val  : pulse_width   ,
+        count    : clk_count     ,
+        at_end   : clk_count_done,
+    );
+
+    inst data_counter: core_components::Counter #(
+        SIZE: DATA_WIDTH_BITS,
+    ) (
+        clk                       ,
+        rst                       ,
+        usr_rst  : data_count_rst ,
+        en       : 1              ,
+        start_val: '0             ,
+        end_val  : DATA_WIDTH - 1 ,
+        count    : data_count     ,
+        at_end   : data_count_done,
+    );
+
+    always_ff (clk, rst) { // Only allow chaning the data to send when transmission starts
+        if_reset {
+            send_data = '0;
+            state     = ComStates::WAIT;
+        } else {
+            send_data = new_send_data;
+            state     = next_state;
+        }
+    }
+
+    always_comb {
+        case state {
+            ComStates::WAIT: {
+                                 clk_count_rst  = 1;
+                                 data_count_rst = 1;
+                                 tx             = 1;
+                                 if send {
+                                     next_state    = ComStates::DATA;
+                                     new_send_data = data;
+                                 } else {
+                                     next_state    = state;
+                                     new_send_data = send_data;
+                                 }
+                             }
+            ComStates::DATA: {
+                                 clk_count_rst  = 0;
+                                 data_count_rst = 0;
+                                 new_send_data  = send_data;
+                                 tx             = send_data[data_count];
+                                 if data_count_done {
+                                     next_state = ComStates::STOP;
+                                 } else {
+                                     next_state = state;
+                                 }
+                             }
+            ComStates::STOP: {
+                                 clk_count_rst  = 0;
+                                 data_count_rst = 0;
+                                 new_send_data  = '0;
+                                 tx             = 1;
+                                 if clk_count_done {
+                                     next_state = ComStates::WAIT;
+                                 } else {
+                                     next_state = state;
+                                 }
+                 
+                             }
+            default: {
+                         next_state     = ComStates::WAIT;
+                         clk_count_rst  = 1;
+                         data_count_rst = 1;
+                         new_send_data  = '0;
+                         tx             = 1;
+                     }
+        }
+        ready = (state == ComStates::WAIT);
+    }
+}

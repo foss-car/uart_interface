@@ -1,0 +1,52 @@
+/// Interface for the uart communication standard.
+/// The data_in gets updated every time rx_done goes high, this has no data buffers
+pub module UartInterface #(
+    /// Data width of the transmit and receive signal message
+    param DATA_WIDTH: u32 = 8,
+    /// Clock frequency of the input clock signal
+    param CLK_FREQ: u32 = 1_000_000,
+    /// Minimum baud rate for the system to support
+    param MIN_BAUD_RATE: u32 = 1_000,
+) (
+    /// system clock
+    clk: input clock,
+    /// reset pin for the lin interface
+    rst: input reset,
+    /// Pulse width of the signal, this can be calculated from `CLK_FREQ / BAUD_RATE`
+    pulse_width: input logic<MAX_PULSE_BITS>,
+    /// Data from the RX pin
+    data_in: input logic<DATA_WIDTH>,
+    /// Data to the TX pin
+    data_out: input logic<DATA_WIDTH>,
+    /// Set to high to send the data, make low before data finishes sending to not resend
+    send: input logic,
+    /// Data bus in that the uart signals come in from
+    rx: input logic,
+    /// Data that gets sent to the lin bus
+    tx: output logic,
+    /// Ready to transmit
+    ready: output logic,
+    /// Data received interrupt
+    rx_done: output logic,
+) {
+    local PULSE_WIDTH   : u32 = CLK_FREQ / MIN_BAUD_RATE;
+    local MAX_PULSE_BITS: u32 = $clog2(PULSE_WIDTH + PULSE_WIDTH / 2);
+    inst transmit: UartTransmit (
+        clk                  ,
+        rst                  ,
+        pulse_width          ,
+        data       : data_out,
+        send                 ,
+        tx                   ,
+        ready                ,
+    );
+    inst recieve: UartReceive (
+        clk                 ,
+        rst                 ,
+        rx                  ,
+        pulse_width         ,
+        data       : data_in,
+        rx_done             ,
+    );
+
+}

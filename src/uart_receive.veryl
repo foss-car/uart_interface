@@ -1,0 +1,158 @@
+/// Receive logic for the UART communication bus
+module UartReceive #(
+    /// Data width of the received signal message
+    param DATA_WIDTH: u32 = 8,
+    /// Bits required to be able to count to the max pulse length.
+    /// If the system supports a range of baud rates, use the lowest one in the calculations.
+    /// The pulse length is `PULSE_WIDTH = CLK_FREQ / BAUD_RATE`,
+    /// so the max bits is $clog2(PULSE_WIDTH + PULSE_WIDTH / 2)
+    param MAX_PULSE_BITS: u32 = 20,
+) (
+    /// system clock
+    clk: input clock,
+    /// reset pin for the lin interface
+    rst: input reset,
+    /// Data that gets sent to the lin bus
+    rx: input logic,
+    /// Pulse width of the signal, this can be calculated from `CLK_FREQ / BAUD_RATE`
+    pulse_width: input logic<MAX_PULSE_BITS>,
+    /// Last data recieved
+    data: output logic<DATA_WIDTH>,
+    /// Data received interrupt
+    rx_done: output logic,
+) {
+    local DATA_WIDTH_BITS: u32 = $clog2(DATA_WIDTH);
+
+    enum ComStates: logic<2> {
+        WAIT,
+        DATA,
+        STOP,
+    }
+
+    var state     : ComStates;
+    var next_state: ComStates;
+    var rx_denoise: logic    ;
+
+    var temp_reg: logic<DATA_WIDTH>;
+
+    var clk_count     : logic<MAX_PULSE_BITS>;
+    var clk_count_en  : logic                ;
+    var clk_count_rst : logic                ;
+    var clk_count_end : logic<MAX_PULSE_BITS>;
+    var clk_count_done: logic                ;
+
+    var data_count_rst : logic;
+    var data_count_done: logic;
+
+    inst denoise: core_components::DenoiseAverageLow #(
+        DELAY_CYCLES : 4,
+        AVERAGE_COUNT: 5,
+    ) (
+        clk                     ,
+        rst                     ,
+        data        : rx        ,
+        data_denoise: rx_denoise,
+    );
+
+    inst clk_counter: core_components::Counter #(
+        SIZE: MAX_PULSE_BITS,
+    ) (
+        clk                      ,
+        rst                      ,
+        usr_rst  : clk_count_rst ,
+        en       : clk_count_en  ,
+        start_val: '0            ,
+        end_val  : clk_count_end ,
+        count    : clk_count     ,
+        at_end   : clk_count_done,
+    );
+
+    inst data_counter: core_components::Counter #(
+        SIZE: DATA_WIDTH_BITS,
+    ) (
+        clk                       ,
+        rst                       ,
+        usr_rst  : data_count_rst ,
+        en       : 1              ,
+        start_val: '0             ,
+        end_val  : DATA_WIDTH - 1 ,
+        count    : _              ,
+        at_end   : data_count_done,
+    );
+
+    let rx_done_clk: clock = rx_done; //hacky
+    always_ff (rx_done_clk, rst) {
+        if_reset {
+            data = '0;
+        } else {
+            data = temp_reg;
+        }
+    }
+
+    always_ff (clk, rst) {
+        if_reset {
+            state    = ComStates::WAIT;
+            temp_reg = '0;
+        } else {
+            if clk_count_done && state == ComStates::DATA {
+                temp_reg = {rx_denoise, temp_reg[msb:1]};
+            }
+            state = next_state;
+        }
+    }
+
+    always_comb {
+        case state {
+            ComStates::WAIT: {
+                                 clk_count_end = pulse_width + pulse_width / 2;
+                                 if rx_denoise == 0 {
+                                     clk_count_en   = 1;
+                                     clk_count_rst  = 0;
+                                     data_count_rst = 1;
+                                     next_state     = ComStates::DATA;
+                                 } else {
+                                     clk_count_en   = 0;
+                                     next_state     = state;
+                                     clk_count_rst  = 1;
+                                     data_count_rst = 0;
+                                 }
+                             }
+            ComStates::DATA: {
+                                 clk_count_end  = pulse_width;
+                                 clk_count_rst  = 0;
+                                 clk_count_en   = 1;
+                                 data_count_rst = 0;
+                                 if data_count_done {
+                                     next_state = ComStates::STOP;
+                                 } else {
+                                     next_state = state;
+                                 }
+                             }
+            ComStates::STOP: {
+                                 clk_count_end  = pulse_width;
+                                 clk_count_rst  = 0;
+                                 data_count_rst = 0;
+                                 if clk_count_done {
+                                     clk_count_en = 0;
+                                     if (rx_denoise) {
+                                         next_state = ComStates::WAIT;
+                                     } else {
+                                         next_state = state;
+                                     }
+                                 } else {
+                                     clk_count_en = 1;
+                                     next_state   = state;
+                                 }
+                 
+                             }
+            default: {
+                         next_state     = ComStates::WAIT;
+                         clk_count_en   = 0;
+                         clk_count_end  = 0;
+                         clk_count_rst  = 1;
+                         data_count_rst = 1;
+                     }
+        }
+        rx_done = (state == ComStates::STOP) && (clk_count == '0);
+    }
+}

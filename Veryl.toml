@@ -1,0 +1,22 @@
+[project]
+name = "uart_interface"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/foss-car/uart_interface"
+
+[build]
+clock_type = "posedge"
+reset_type = "async_high"
+target = {type = "directory", path = "target"}
+
+[test]
+simulator = "verilator"
+
+#[test.verilator]
+#compile_args = ""
+#simulate_args = ""
+
+[dependencies]
+"https://github.com/foss-car/core-components" = "0.1.0"
+
+
